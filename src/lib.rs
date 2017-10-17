@@ -144,7 +144,20 @@ impl Server {
             return Ok(());
         }
 
-        let request = parse_request(&buffer)?;
+        let request = match parse_request(&buffer) {
+            Ok(r) => r,
+            Err(Error::RequestPayloadSizeExceeded) => {
+                let response =
+                    Response::builder().status(StatusCode::PAYLOAD_TOO_LARGE)
+                                       .body("<h1>413</h1><p>Request too large!<p>".as_bytes())
+                                       .unwrap();
+
+                write_response(response, stream)?;
+                return Ok(());
+            },
+            Err(e) => return Err(e),
+        };
+
         let mut response_builder = Response::builder();
 
         // first, we serve static files
@@ -203,10 +216,21 @@ fn write_response(response: Response<&[u8]>, mut stream: TcpStream) -> Result<()
 }
 
 fn parse_request(raw_request: &[u8]) -> Result<Request<&[u8]>, Error> {
+    use httparse::Status;
+
     let mut headers = [httparse::EMPTY_HEADER; 16];
     let mut req = httparse::Request::new(&mut headers);
 
-    let header_length = req.parse(raw_request)?.unwrap() as usize;
+    let header_length = match req.parse(raw_request)? {
+        Status::Complete(len) => {
+            len as usize
+        },
+        Status::Partial => {
+            return Err(Error::RequestPayloadSizeExceeded);
+        }
+    };
+
+//    let header_length = req.parse(raw_request)?.unwrap() as usize;
 
     let body = &raw_request[header_length..];
     let mut http_req = Request::builder();
