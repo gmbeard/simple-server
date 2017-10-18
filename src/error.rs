@@ -15,6 +15,8 @@ pub enum Error {
     InvalidUri(http::uri::InvalidUri),
     /// The request (body and headers) exceeded the maximum permitted size.
     RequestPayloadSizeExceeded,
+
+    MoreBytesRequired,
 }
 
 impl From<std::io::Error> for Error {

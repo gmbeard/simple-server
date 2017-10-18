@@ -51,12 +51,12 @@ pub use error::Error;
 ///
 /// This is the core type of this crate, and is used to create a new
 /// server and listen for connections.
-pub struct Server {
-    handler: fn(Request<&[u8]>, ResponseBuilder) -> Result<Response<&[u8]>, Error>,
+pub struct Server<'response> {
+    handler: fn(Request<Vec<u8>>, ResponseBuilder) -> Result<Response<&'response [u8]>, Error>,
 }
 
 
-impl Server {
+impl<'response> Server<'response> {
     /// Constructs a new server with the given handler.
     ///
     /// The handler function is called on all requests.
@@ -85,7 +85,7 @@ impl Server {
     /// }
     /// ```
     pub fn new(
-        handler: fn(Request<&[u8]>, ResponseBuilder) -> Result<Response<&[u8]>, Error>,
+        handler: fn(Request<Vec<u8>>, ResponseBuilder) -> Result<Response<&'response [u8]>, Error>,
     ) -> Server {
         Server { handler }
     }
@@ -136,26 +136,43 @@ impl Server {
         }
     }
 
+    fn read_request_object<'a>(&self, 
+                               stream: &mut TcpStream, 
+                               buf: &'a mut Vec<u8>) -> Result<Request<Vec<u8>>, Error> 
+    {
+        use std::io;
+
+        let mut scratch = [0; 512];
+        let bytes_read = {
+            let bytes_read = stream.read(&mut scratch)?;
+            if bytes_read == 0 {
+                // Connection closed
+                return Err(io::Error::new(io::ErrorKind::Other, "Connection closed").into());
+            }
+            bytes_read
+        };
+
+        buf.extend(&scratch[..bytes_read]);
+        parse_request(&buf)
+    }
+
     fn handle_connection(&self, mut stream: TcpStream) -> Result<(), Error> {
-        let mut buffer = [0; 512];
+        
+        let mut buf = Vec::with_capacity(512);
+        let request = {
+            let req: Request<Vec<u8>>;
+            loop {
+                match self.read_request_object(&mut stream, &mut buf) {
+                    Ok(r) => {
+                        req = r;
+                        break;
+                    },
+                    Err(Error::MoreBytesRequired) => {},
+                    Err(e) => return Err(e),
+                }
+            }
 
-        if stream.read(&mut buffer)? == 0 {
-            // Connection closed
-            return Ok(());
-        }
-
-        let request = match parse_request(&buffer) {
-            Ok(r) => r,
-            Err(Error::RequestPayloadSizeExceeded) => {
-                let response =
-                    Response::builder().status(StatusCode::PAYLOAD_TOO_LARGE)
-                                       .body("<h1>413</h1><p>Request too large!<p>".as_bytes())
-                                       .unwrap();
-
-                write_response(response, stream)?;
-                return Ok(());
-            },
-            Err(e) => return Err(e),
+            req
         };
 
         let mut response_builder = Response::builder();
@@ -215,7 +232,7 @@ fn write_response(response: Response<&[u8]>, mut stream: TcpStream) -> Result<()
     Ok(stream.flush()?)
 }
 
-fn parse_request(raw_request: &[u8]) -> Result<Request<&[u8]>, Error> {
+fn parse_request(raw_request: &[u8]) -> Result<Request<Vec<u8>>, Error> {
     use httparse::Status;
 
     let mut headers = [httparse::EMPTY_HEADER; 16];
@@ -226,13 +243,13 @@ fn parse_request(raw_request: &[u8]) -> Result<Request<&[u8]>, Error> {
             len as usize
         },
         Status::Partial => {
-            return Err(Error::RequestPayloadSizeExceeded);
+            return Err(Error::MoreBytesRequired);
         }
     };
 
 //    let header_length = req.parse(raw_request)?.unwrap() as usize;
 
-    let body = &raw_request[header_length..];
+    let body = raw_request[header_length..].to_vec();
     let mut http_req = Request::builder();
 
     for header in req.headers {
