@@ -136,43 +136,38 @@ impl<'response> Server<'response> {
         }
     }
 
-    fn read_request_object<'a>(&self, 
-                               stream: &mut TcpStream, 
-                               buf: &'a mut Vec<u8>) -> Result<Request<Vec<u8>>, Error> 
-    {
-        use std::io;
-
+    fn read_request_object(&self, stream: &mut TcpStream) -> Result<Request<Vec<u8>>, Error> {
         let mut scratch = [0; 512];
-        let bytes_read = {
-            let bytes_read = stream.read(&mut scratch)?;
-            if bytes_read == 0 {
-                // Connection closed
-                return Err(io::Error::new(io::ErrorKind::Other, "Connection closed").into());
-            }
-            bytes_read
-        };
+        let mut buf = Vec::with_capacity(scratch.len());
+        let mut total_req_bytes = 0;
 
-        buf.extend(&scratch[..bytes_read]);
-        parse_request(&buf)
+        loop {
+            let bytes_read = {
+                let bytes_read = stream.read(&mut scratch)?;
+                if bytes_read == 0 {
+                    // Connection closed
+                    return Err(Error::ConnectionClosed);
+                }
+                bytes_read
+            };
+
+            buf.extend(&scratch[..bytes_read]);
+            total_req_bytes += bytes_read;
+
+            match parse_request(&buf[..total_req_bytes]) {
+                Ok(r) => return Ok(r),
+                Err(Error::MoreBytesRequired) => {},
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     fn handle_connection(&self, mut stream: TcpStream) -> Result<(), Error> {
         
-        let mut buf = Vec::with_capacity(512);
-        let request = {
-            let req: Request<Vec<u8>>;
-            loop {
-                match self.read_request_object(&mut stream, &mut buf) {
-                    Ok(r) => {
-                        req = r;
-                        break;
-                    },
-                    Err(Error::MoreBytesRequired) => {},
-                    Err(e) => return Err(e),
-                }
-            }
-
-            req
+        let request = match self.read_request_object(&mut stream) {
+            Err(Error::ConnectionClosed) => return Ok(()),
+            Err(e) => return Err(e),
+            Ok(r) => r,
         };
 
         let mut response_builder = Response::builder();

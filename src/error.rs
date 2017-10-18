@@ -13,10 +13,10 @@ pub enum Error {
     HttpParse(httparse::Error),
     /// An error while parsing the URI of the request.
     InvalidUri(http::uri::InvalidUri),
-    /// The request (body and headers) exceeded the maximum permitted size.
-    RequestPayloadSizeExceeded,
-
+    #[doc(hidden)]
     MoreBytesRequired,
+    #[doc(hidden)]
+    ConnectionClosed,
 }
 
 impl From<std::io::Error> for Error {
